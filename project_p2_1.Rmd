@@ -1,0 +1,249 @@
+---
+title: 'Project Part 2: Part 1 - Prediction'
+author: "Savannah McCoy"
+date: "11/19/2020"
+output: pdf_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggpubr)
+library(dbplyr)
+library(doBy)
+library(extrafont)
+library(ggplot2)
+library(reshape2)
+library(cvTools)
+library(glmnet)
+```
+
+
+## Project Part 2 - Prediction
+
+```{r 1.0}
+
+df <- read.csv("final_new_data.csv", sep=',')
+df$is_popular <- ifelse(df$song_popularity >= 70, 1, 0)
+df_pop <- subset(df, is_popular == 1) # 4541/139606 = 0.032527 = 3.25%
+
+set.seed(1)
+
+
+# df_sub <-  df[sample(1:nrow(df), 5000, replace=FALSE),]
+# 
+# smp_size <- floor(0.71631 * nrow(df_sub))
+# train_ind <- sample(seq_len(nrow(df_sub)), size = smp_size)
+# 
+# df_train <- df_sub[train_ind, ]
+# df_test <- df_sub[-train_ind, ]
+
+smp_size <- floor(0.71631 * nrow(df))
+train_ind <- sample(seq_len(nrow(df)), size = smp_size)
+
+df_train <- df[train_ind, ]
+df_test <- df[-train_ind, ]
+
+```
+
+
+Data Manipulation
+```{r 1.1}
+
+# Normalize
+normalize <- function(x) {
+return ((x - min(x)) / (max(x) - min(x)))
+}
+
+# Subset features
+myvars <- c("song_popularity", "primary_artist_popularity", "primary_artist_followers", 
+                              "instrumentalness", "speechiness", "duration_ms", "danceability", 
+                              "loudness", "liveness" , "energy", "tempo", "year", "explicit", 
+                              "isSingle", "is_popular")
+
+d <- df_train[myvars]
+df_train_norm <- normalize(d)
+
+d2 <- df_test[myvars]
+df_test_norm <- normalize(d2)
+```
+
+
+Prediction - Norm cv-10
+```{r 1.2}
+
+
+form.str = "song_popularity ~ primary_artist_popularity + primary_artist_followers +
+                              instrumentalness + speechiness + duration_ms + danceability +
+                              loudness + liveness + energy + tempo + year + explicit + isSingle"
+
+form = as.formula(form.str)
+
+
+# fit linear model
+model <- lm(form, data=df_train_norm )
+
+summary(model)
+
+lin_reg_pred <- predict(model, newdata = df_test_norm, interval = "prediction") 
+# lin_reg_pred
+
+mydata <- cbind(df_test_norm, lin_reg_pred)
+
+
+p <- ggplot(mydata, aes(song_popularity, primary_artist_popularity)) +
+  geom_point(alpha = 0.8, colour = "#1DB954", size = 0.5) + stat_smooth(method = lm, colour = "#000000") +
+  theme_bw() +
+  ggtitle("Linear Model for Song Popularity") +
+  theme( plot.title=element_text(vjust=1.0) ) +
+  xlab("song popularity") +
+  theme( axis.title.x = element_text(vjust=-.5) ) +
+  ylab("primary artist popularity") +
+  theme( axis.title.y = element_text(vjust=1.0) )
+p
+
+ggsave("plot-1.png", plot = p, width = 8, height = 4)
+```
+
+
+
+```{r 1.3}
+
+rsme_test1 <- sqrt(mean((lin_reg_pred - df_test_norm$song_popularity)^2))
+print(paste("RSME Test:", rsme_test1))
+
+rsq <- function (x, y) cor(x, y) ^ 2
+rsq(lin_reg_pred, df_test_norm$song_popularity)
+
+```
+
+
+
+Classification - Train
+```{r 1.4}
+library(caret)
+library(e1071)
+classifier <- glm(is_popular ~ primary_artist_popularity + danceability + 
+                    loudness + energy + year + explicit + instrumentalness + 
+                    speechiness + duration_ms + liveness + tempo + isSingle, 
+                  family='binomial', data = df_train)
+
+# summary(classifier)
+# confint(classifier)
+
+class_pred <- predict(classifier, newdata = df_test, type='response') 
+
+pred.logit <- rep(0,length(class_pred))
+pred.logit[class_pred>=0.5] <- 1
+
+
+# levels(factor(df_test$is_popular))
+# levels(factor(pred.logit))
+confusionMatrix(factor(df_test$is_popular), factor(pred.logit))
+
+# pred.logit
+```
+
+
+
+```{r 1.5}
+
+g2Fit <- predict(classifier, type="response")
+g2Actual <- as.numeric(df_train$is_popular == 1)
+g2Correct <- ( g2Fit > .5) & g2Actual |
+             ( g2Fit <= .5) & !g2Actual
+g2Diag <- data.frame(df_train,  
+                     academic=g2Actual,  
+                     link=predict(classifier, type="link"),  
+                     fit=g2Fit,  
+                     pearson=residuals(classifier,type="pearson"),
+                     Correct=g2Correct
+                     )  
+q <- ggplot(data=g2Diag, aes(x=link)) +  
+  geom_point(alpha = 0.8, size = 0.5, position = position_jitter(height = 0.05),   
+             aes(y=academic, color=Correct) ) +  
+  geom_smooth(method="loess", aes(y=fit), color="black") +  
+  theme_bw() + scale_color_manual(values=c("#000000", "#1DB954")) +
+  ggtitle("Predicted probability for is_popular") +  
+  theme( plot.title=element_text(vjust=1.0) ) +  
+  xlab("Predicted value") +  
+  theme( axis.title.x = element_text(vjust=-.5) ) +  
+  ylab("Probability") +  
+  theme( axis.title.y = element_text(vjust=1.0) ) +
+  theme(legend.position = "bottom")  
+q
+
+ggsave("plot-2.png", plot = q, width = 8, height = 4)
+
+```
+
+
+FIT LINEAR MODEL TO TEST
+```{r 1.6}
+
+form.str = "song_popularity ~ primary_artist_popularity + primary_artist_followers +
+                              instrumentalness + speechiness + duration_ms + danceability +
+                              loudness + liveness + energy + tempo + year + explicit + isSingle"
+
+form = as.formula(form.str)
+
+
+# fit linear model
+model2 <- lm(form, data=df_test_norm )
+
+summary(model2)
+```
+
+
+USE BOOTSTRAP FOR CONF INTS
+```{r 1.7}
+
+confint(model2)
+# colnames(df_train)
+
+normalize <- function(x) {
+return ((x - min(x)) / (max(x) - min(x)))
+}
+
+
+# df_train_norm <- normalize(df_train)
+
+form.str = "song_popularity ~ acousticness + danceability + 
+            duration_ms + energy + explicit + instrumentalness + key + 
+            liveness + loudness + mode + song_popularity + 
+            speechiness + tempo + valence + year + 
+            time_signature +  
+            primary_artist_followers + primary_artist_popularity + 
+            isSingle + hasFeature + isPopular + is_popular"
+
+form = as.formula(form.str)
+# lm4 <- lm(form, data=df_train)
+# print(summary(lm4))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
